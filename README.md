@@ -1,3 +1,3 @@
-# UART IR Chat
+# Timer IR Spoofing
 
-Implement an IR based chat
+Implement IR Spoofing using Timer peripheral

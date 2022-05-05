@@ -1,2 +1,2 @@
-idf_component_register(SRCS "Prac5_uart.c"
+idf_component_register(SRCS "Prac6_timer.c"
                     INCLUDE_DIRS ".")
