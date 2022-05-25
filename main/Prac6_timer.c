@@ -11,9 +11,11 @@
 #include "sdkconfig.h"
 #include "myUart.h"
 
+#include "driver/ledc.h"
+#include "freertos/queue.h"
+#include "driver/timer.h"
 
-#define UART_SEND_SCHEME    0
-#define TIMER_SEND_SCHEME   1
+#include "gpio_reg.h"
 
 // UART 0 used for PC communication
 #define PC_UART_PORT        0
@@ -21,34 +23,12 @@
 #define PC_UART_TX_PIN      1
 #define PC_UARTS_BAUD_RATE  (115200)
 
-// UART 2 used for IR RX
-#define IR_RX_UART_PORT     2
-#define IR_RX_RX_PIN        16
-#define IR_RX_TX_PIN        17
 
 #define UART_BUF_SIZE       (1024)
-
 #define IR_FREQ             38000
-#define MAX_PACKET_SIZE     255
-
 #define IR_TX_TX_PIN        15
+#define IR_RX_RX_PIN        16
 
-#define SCHEME TIMER_SEND_SCHEME
-#if SCHEME == UART_SEND_SCHEME
-// UART 1 used for IR TX
-#define IR_TX_UART_PORT     1
-#define IR_TX_RX_PIN        4
-#define IR_BIT_SIZE         7
-#define IR_MUL              3
-#define IR_LOW              0x5B   //0b101 1011
-#define IR_HIGH             0x00
-#define UART_IR_DIV         6
-#define IR_TX_BAUDS         (IR_FREQ*IR_MUL)
-#define IR_RX_BAUDS         ((IR_FREQ / (IR_BIT_SIZE + 2)) / UART_IR_DIV) //= ~700
-#else // Timer mode
-#include "driver/ledc.h"
-#include "freertos/queue.h"
-#include "driver/timer.h"
 
 #define BUFFER_SIZE (1<<11) //2048 //2K 
 
@@ -57,12 +37,14 @@
 #define IS_BUFFER_FULL(buff)    (MOD(buff.in_idx + 1) == buff.out_idx)
 
 typedef struct{
-    uint8_t buffer[BUFFER_SIZE];
+    uint16_t buffer[BUFFER_SIZE];
     uint16_t in_idx;
     uint16_t out_idx;
 }sBufferCircular_t;
 
-sBufferCircular_t sIrSendBuffer;
+sBufferCircular_t sTimmingBuffer;
+
+static bool startFlag = false;
 
 #define LEDC_TIMER              LEDC_TIMER_0
 #define LEDC_MODE               LEDC_LOW_SPEED_MODE
@@ -97,40 +79,16 @@ static void ledc_init(void)
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
 }
 
+
 /* Timer interrupt service routine */
 static void IRAM_ATTR timer0_ISR(void *ptr)
 {
-    timer_group_clr_intr_status_in_isr(TIMER_GROUP_0, TIMER_0);
-    timer_group_enable_alarm_in_isr(TIMER_GROUP_0, TIMER_0);
-    
-    if (IS_BUFFER_EMPTY(sIrSendBuffer))
-    {
-        ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, 0));
-    }
-    else
-    {
-        uint8_t bState = sIrSendBuffer.buffer[sIrSendBuffer.out_idx];
-        sIrSendBuffer.out_idx = MOD(sIrSendBuffer.out_idx + 1);
-
-        if (bState)
-        {
-            ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, LEDC_DUTY));
-        }
-        else
-        {
-            ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, 0));
-        }
-    }
-    ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
+    // deshabilitar int GPIO
+    // indicar bandera de finalizacion
 }
 
-#define TIMER_INTR_US          1000                                 // Execution time of each ISR interval in micro-seconds
-#define IR_RX_BAUDS            1000
-#define TIMER_DIVIDER          (256)                                  //  Hardware timer clock divider
-#define TIMER_TICKS            (TIMER_BASE_CLK / TIMER_DIVIDER)     // TIMER_BASE_CLK = APB_CLK = 80MHz
-#define SEC_TO_MICRO_SEC(x)    ((x) / 1000 / 1000)                  // Convert second to micro-second
-#define ALARM_VAL_US           SEC_TO_MICRO_SEC(TIMER_INTR_US * TIMER_TICKS)     // Alarm value in micro-seconds
-#define RX_TIMEOUT_MS          ((IR_RX_BAUDS * 10) / 1000)
+#define TIMEOUT_TICKS           15000           // 15 ms timeout
+#define TIMER_DIVIDER          (80)             //  1us divider
 
 /* Timer group0 TIMER_0 initialization */
 static void timer0_init(void)
@@ -142,14 +100,14 @@ static void timer0_init(void)
         .counter_en = TIMER_PAUSE,
         .alarm_en = TIMER_ALARM_EN,
         .intr_type = TIMER_INTR_LEVEL,
-        .auto_reload = 1,
+        .auto_reload = 0,
     };
 
     ret = timer_init(TIMER_GROUP_0, TIMER_0, &config);
     ESP_ERROR_CHECK(ret);
     ret = timer_set_counter_value(TIMER_GROUP_0, TIMER_0, 0x00000000ULL);
     ESP_ERROR_CHECK(ret);
-    ret = timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, ALARM_VAL_US);
+    ret = timer_set_alarm_value(TIMER_GROUP_0, TIMER_0, TIMEOUT_TICKS);
     ESP_ERROR_CHECK(ret);
     ret = timer_enable_intr(TIMER_GROUP_0, TIMER_0);
     ESP_ERROR_CHECK(ret);
@@ -157,7 +115,42 @@ static void timer0_init(void)
     timer_isr_register(TIMER_GROUP_0, TIMER_0, timer0_ISR, NULL, 0, NULL);
 }
 
-#endif
+static void IRAM_ATTR gpio_isr_handler(void* arg)
+{
+    uint32_t gpio_num = (uint32_t) arg;
+    
+    if (gpio_num != IR_RX_RX_PIN)
+        return;
+
+    uint8_t gpioState = (GPIO_IN_REG >> IR_RX_RX_PIN) & 1;
+
+    if (gpioState == 0)
+    {
+        if (startFlag == true)  
+        {
+            set_alarm_in_isr 
+            enable_timer_in_isr
+        }
+        else
+        {
+            timer_group_get_counter_value_in_isr
+        } 
+        clear __COUNTER__
+        counter start
+    }
+    else // flanco hacia arriba
+    {
+        timer_group_get_counter_value_in_isr
+    }
+}
+
+void startSampling(void)
+{
+    startFlag = true;
+    timer0_init();
+    gpio_isr_handler_add(IR_RX_RX_PIN, gpio_isr_handler, (void*) IR_RX_RX_PIN);
+}
+
 
 
 void uartInit(uart_port_t uart_num, uint32_t baudrate, uint8_t size, uint8_t parity, uint8_t stop, uint8_t txPin, uint8_t rxPin)
