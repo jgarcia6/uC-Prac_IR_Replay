@@ -45,7 +45,6 @@ typedef struct{
 
 sBufferCircular_t sTimingBuffer;
 
-static bool startFlag = false;
 static bool endFlag = false;
 
 #define LEDC_TIMER              LEDC_TIMER_0
@@ -102,7 +101,7 @@ static void timer0_init(void)
     timer_config_t config = {
         .divider = TIMER_DIVIDER,
         .counter_dir = TIMER_COUNT_UP,
-        .counter_en = TIMER_PAUSE,
+        .counter_en = TIMER_START,
         .alarm_en = TIMER_ALARM_EN,
         .intr_type = TIMER_INTR_LEVEL,
         .auto_reload = 0,
@@ -123,6 +122,7 @@ static void timer0_init(void)
 
 static void IRAM_ATTR gpio_isr_handler(void* arg)
 {
+    static uint8_t gpioStateOld = 0;
     uint32_t gpio_num = (uint32_t) arg;
     
     if (gpio_num != IR_RX_RX_PIN)
@@ -130,31 +130,28 @@ static void IRAM_ATTR gpio_isr_handler(void* arg)
 
     uint8_t gpioState = (GPIO_IN_REG >> IR_RX_RX_PIN) & 1;
 
-    if (startFlag == true && gpioState == 0)
-    {
-        startFlag = false;
-        //set_alarm_in_isr 
-        timer_group_enable_alarm_in_isr(TIMER_GROUP_0, TIMER_0);
-        //enable_timer_in_isr
-        timer_group_set_counter_enable_in_isr(TIMER_GROUP_0, TIMER_0, TIMER_START);
-    }
-    else if (startFlag == false)
+    if (gpioState != gpioStateOld)
     {
         BUFFER_INSERT(sTimingBuffer, timer_group_get_counter_value_in_isr(TIMER_GROUP_0, TIMER_0))
         timer_set_counter_value_in_isr(TIMER_GROUP_0, TIMER_0, 0x00000000ULL);
-        //timer_group_set_counter_enable_in_isr(TIMER_GROUP_0, TIMER_0, TIMER_START);
+        //timer_group_set_counter_enable_in_isr(TIMER_GROUP_0, TIMER_0, TIMER_START);    
     }
+    gpioStateOld = gpioState;
 }
 
 // timer interrupt, disable GPIO interrupt, disable timer
 
 void startSampling(void)
 {
-    startFlag = true;
+
+    while (gpio_get_level(IR_RX_RX_PIN) == 1)
+        // Wait for falling edge;
+
     sTimingBuffer.in_idx = 0;
     sTimingBuffer.out_idx = 0;
     timer0_init();
     gpio_isr_handler_add(IR_RX_RX_PIN, gpio_isr_handler, (void*) IR_RX_RX_PIN);
+    endFlag = false;
 }
 
 
@@ -255,11 +252,15 @@ void app_main(void)
             delayMs(1);
         }
 
-        sprintf(str,"state = 0, duration = %d",sTimingBuffer.buffer[sTimingBuffer.out_idx]);
-        sTimingBuffer.out_idx = MOD(sTimingBuffer.out_idx + 1);
-        uartPuts(PC_UART_PORT, str);
-        sprintf(str,"state = 1, duration = %d",sTimingBuffer.buffer[sTimingBuffer.out_idx]);
-        sTimingBuffer.out_idx = MOD(sTimingBuffer.out_idx + 1);
-        uartPuts(PC_UART_PORT, str);
+        while (!IS_BUFFER_EMPTY(sTimingBuffer))
+        {
+            sprintf(str,"state = 0, duration = %d",sTimingBuffer.buffer[sTimingBuffer.out_idx]);
+            sTimingBuffer.out_idx = MOD(sTimingBuffer.out_idx + 1);
+            uartPuts(PC_UART_PORT, str);
+            sprintf(str,"state = 1, duration = %d",sTimingBuffer.buffer[sTimingBuffer.out_idx]);
+            sTimingBuffer.out_idx = MOD(sTimingBuffer.out_idx + 1);
+            uartPuts(PC_UART_PORT, str);
+        }
+        
     } 
 }
