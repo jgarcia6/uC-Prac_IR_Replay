@@ -17,6 +17,17 @@
 
 #include "soc/gpio_reg.h"
 
+void delayMs(uint16_t ms);
+
+#define REG_ADDR(addr) (*(volatile uint32_t*) (addr)) 
+#define T00_CONFIG  0x3FF5F000
+#define T00_L       0x3FF5F004
+#define T00_H       0x3FF5F008
+#define T00_RLOAD   0x3FF5F020
+#define T00_UPDATE  0x3FF5F00C
+#define TIM_EN      31
+
+
 // UART 0 used for PC communication
 #define PC_UART_PORT        0
 #define PC_UART_RX_PIN      3
@@ -85,7 +96,6 @@ static void ledc_init(void)
 static void IRAM_ATTR timer0_ISR(void *ptr)
 {
     timer_group_clr_intr_status_in_isr(TIMER_GROUP_0, TIMER_0);
-    timer_group_set_counter_enable_in_isr(TIMER_GROUP_0, TIMER_0, TIMER_PAUSE);
 
     gpio_isr_handler_remove(IR_RX_RX_PIN);
     endFlag = true;
@@ -102,7 +112,7 @@ static void timer0_init(void)
         .divider = TIMER_DIVIDER,
         .counter_dir = TIMER_COUNT_UP,
         .counter_en = TIMER_START,
-        .alarm_en = TIMER_ALARM_EN,
+        .alarm_en = TIMER_ALARM_DIS,
         .intr_type = TIMER_INTR_LEVEL,
         .auto_reload = 0,
     };
@@ -132,9 +142,11 @@ static void IRAM_ATTR gpio_isr_handler(void* arg)
 
     if (gpioState != gpioStateOld)
     {
-        BUFFER_INSERT(sTimingBuffer, timer_group_get_counter_value_in_isr(TIMER_GROUP_0, TIMER_0))
-        timer_set_counter_value_in_isr(TIMER_GROUP_0, TIMER_0, 0x00000000ULL);
-        //timer_group_set_counter_enable_in_isr(TIMER_GROUP_0, TIMER_0, TIMER_START);    
+        BUFFER_INSERT(sTimingBuffer, timer_group_get_counter_value_in_isr(TIMER_GROUP_0, TIMER_0));
+        //timer_set_counter_value_in_isr(TIMER_GROUP_0, TIMER_0, 0x00000000ULL);
+        REG_ADDR(T00_L) = 0;
+        REG_ADDR(T00_H) = 0;
+        REG_ADDR(T00_RLOAD) = 1; 
     }
     gpioStateOld = gpioState;
 }
@@ -145,8 +157,11 @@ void startSampling(void)
 {
 
     while (gpio_get_level(IR_RX_RX_PIN) == 1)
+    {
         // Wait for falling edge;
-
+        delayMs(1);
+    }
+         
     sTimingBuffer.in_idx = 0;
     sTimingBuffer.out_idx = 0;
     timer0_init();
@@ -238,19 +253,35 @@ void app_main(void)
     delayMs(500);
     uartClrScr(PC_UART_PORT);
     // Init 38KHz LED modulation control
-    //ledc_init();
+    ledc_init();
     // Init Timer and ISR
     //timer0_init();
     //timer_start(TIMER_GROUP_0, TIMER_0);
     
     while(1)
     {
+        uartPuts(PC_UART_PORT,"waiting for input");
+        timer0_init();
         uartGetchar(PC_UART_PORT);
+        uartPuts(PC_UART_PORT,"waiting for update");
+        REG_ADDR(T00_UPDATE) = 1;
+        while (REG_ADDR(T00_UPDATE))
+            ;
+
+        uint64_t ticks =  (((uint64_t) (REG_ADDR(T00_H)))<<32) | REG_ADDR(T00_L);
+        sprintf(str,"\nticks = 0x%llx \n", ticks);
+        uartPuts(PC_UART_PORT,str);
+    }     
+  #if 0      
+        
         startSampling();
         while(!endFlag)
         {
             delayMs(1);
         }
+
+        //timer_group_set_counter_enable(TIMER_GROUP_0, TIMER_0, TIMER_PAUSE);
+        REG_ADDR(T00_CONFIG) &= ~(1 << TIM_EN); // Disable timer 00
 
         while (!IS_BUFFER_EMPTY(sTimingBuffer))
         {
@@ -263,4 +294,5 @@ void app_main(void)
         }
         
     } 
+    #endif
 }
