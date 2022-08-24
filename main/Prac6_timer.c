@@ -39,6 +39,7 @@ void delayMs(uint16_t ms);
 #define IR_FREQ             38000
 #define IR_TX_TX_PIN        15
 #define IR_RX_RX_PIN        16
+#define ESP_INTR_FLAG_DEFAULT 0
 
 
 #define BUFFER_SIZE (1<<11) //2048 //2K 
@@ -112,7 +113,7 @@ static void timer0_init(void)
         .divider = TIMER_DIVIDER,
         .counter_dir = TIMER_COUNT_UP,
         .counter_en = TIMER_START,
-        .alarm_en = TIMER_ALARM_DIS,
+        .alarm_en = TIMER_ALARM_EN,
         .intr_type = TIMER_INTR_LEVEL,
         .auto_reload = 0,
     };
@@ -129,16 +130,16 @@ static void timer0_init(void)
     timer_isr_register(TIMER_GROUP_0, TIMER_0, timer0_ISR, NULL, 0, NULL);
 }
 
-
+static uint8_t gpioStateOld = 0;
 static void IRAM_ATTR gpio_isr_handler(void* arg)
 {
-    static uint8_t gpioStateOld = 0;
+
     uint32_t gpio_num = (uint32_t) arg;
     
     if (gpio_num != IR_RX_RX_PIN)
         return;
 
-    uint8_t gpioState = (GPIO_IN_REG >> IR_RX_RX_PIN) & 1;
+    uint8_t gpioState = (REG_ADDR(GPIO_IN_REG) >> IR_RX_RX_PIN) & 1;
 
     if (gpioState != gpioStateOld)
     {
@@ -155,18 +156,20 @@ static void IRAM_ATTR gpio_isr_handler(void* arg)
 
 void startSampling(void)
 {
-
+    uartPutchar(PC_UART_PORT, '#');
     while (gpio_get_level(IR_RX_RX_PIN) == 1)
     {
         // Wait for falling edge;
         delayMs(1);
     }
-         
+    uartPutchar(PC_UART_PORT, '%');
     sTimingBuffer.in_idx = 0;
     sTimingBuffer.out_idx = 0;
     timer0_init();
     gpio_isr_handler_add(IR_RX_RX_PIN, gpio_isr_handler, (void*) IR_RX_RX_PIN);
+    
     endFlag = false;
+    uartPutchar(PC_UART_PORT, '&');
 }
 
 
@@ -244,6 +247,25 @@ char uartGetchar(uart_port_t uart_num)
     return c;
 }
 
+void gpioConfig(void)
+{
+    //zero-initialize the config structure.
+    gpio_config_t io_conf = {};
+
+    //interrupt of rising edge
+    io_conf.intr_type = GPIO_INTR_ANYEDGE;
+    //bit mask of the pins, use GPIO4/5 here
+    io_conf.pin_bit_mask = 1 << IR_RX_RX_PIN;
+    //set as input mode
+    io_conf.mode = GPIO_MODE_INPUT;
+    //enable pull-up mode
+    io_conf.pull_up_en = 0;
+    gpio_config(&io_conf);
+
+    //install gpio isr service
+    gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);
+}
+
 void app_main(void)
 {
     char str[32];
@@ -252,32 +274,31 @@ void app_main(void)
     uartGoto11(PC_UART_PORT);
     delayMs(500);
     uartClrScr(PC_UART_PORT);
+    uartPutchar(PC_UART_PORT, 'x');
     // Init 38KHz LED modulation control
     ledc_init();
     // Init Timer and ISR
     //timer0_init();
     //timer_start(TIMER_GROUP_0, TIMER_0);
     
+    gpioConfig();
+
     while(1)
     {
-        uartPuts(PC_UART_PORT,"waiting for input");
-        timer0_init();
-        uartGetchar(PC_UART_PORT);
-        uartPuts(PC_UART_PORT,"waiting for update");
-        REG_ADDR(T00_UPDATE) = 1;
-        while (REG_ADDR(T00_UPDATE))
-            ;
-
-        uint64_t ticks =  (((uint64_t) (REG_ADDR(T00_H)))<<32) | REG_ADDR(T00_L);
-        sprintf(str,"\nticks = 0x%llx \n", ticks);
-        uartPuts(PC_UART_PORT,str);
-    }     
-  #if 0      
-        
+        uint8_t state = 0;
+        uint8_t gpioState = 0;
         startSampling();
         while(!endFlag)
         {
+            
             delayMs(1);
+/*            if (!IS_BUFFER_EMPTY(sTimingBuffer))
+            {
+                sprintf(str,"\nstate = %d, duration = %d", state, sTimingBuffer.buffer[sTimingBuffer.out_idx]);
+                sTimingBuffer.out_idx = MOD(sTimingBuffer.out_idx + 1);
+                uartPuts(PC_UART_PORT, str);
+                state ^= 1;
+            }*/
         }
 
         //timer_group_set_counter_enable(TIMER_GROUP_0, TIMER_0, TIMER_PAUSE);
@@ -285,14 +306,11 @@ void app_main(void)
 
         while (!IS_BUFFER_EMPTY(sTimingBuffer))
         {
-            sprintf(str,"state = 0, duration = %d",sTimingBuffer.buffer[sTimingBuffer.out_idx]);
+            sprintf(str,"\nstate = %d, duration = %d", state, sTimingBuffer.buffer[sTimingBuffer.out_idx]);
             sTimingBuffer.out_idx = MOD(sTimingBuffer.out_idx + 1);
             uartPuts(PC_UART_PORT, str);
-            sprintf(str,"state = 1, duration = %d",sTimingBuffer.buffer[sTimingBuffer.out_idx]);
-            sTimingBuffer.out_idx = MOD(sTimingBuffer.out_idx + 1);
-            uartPuts(PC_UART_PORT, str);
+            state ^= 1;
         }
         
     } 
-    #endif
 }
